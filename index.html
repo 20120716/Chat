@@ -2,35 +2,36 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Firebase Chat with Room Creator</title>
+    <title>Firebase Chat - Auto Delete Mode</title>
     <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 10px; line-height: 1.6; }
+        body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 10px; line-height: 1.6; background: #f0f2f5; }
         .hidden { display: none; }
-        .card { border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: #f9f9f9; }
-        #chat-box { border: 1px solid #ccc; height: 350px; overflow-y: scroll; margin-bottom: 10px; padding: 10px; background: white; }
-        .room-item { border: 1px solid #eee; padding: 12px; margin: 8px 0; cursor: pointer; border-radius: 5px; background: white; display: flex; justify-content: space-between; align-items: center; }
-        .room-item:hover { background: #eef2ff; border-color: #a5b4fc; }
-        input[type="text"], input[type="password"] { padding: 8px; width: calc(100% - 20px); margin-bottom: 10px; }
-        button { padding: 8px 15px; cursor: pointer; background: #4f46e5; color: white; border: none; border-radius: 4px; }
+        .card { border: none; padding: 20px; margin-bottom: 15px; border-radius: 12px; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #chat-box { border: 1px solid #eee; height: 350px; overflow-y: scroll; margin-bottom: 15px; padding: 15px; background: #fafafa; border-radius: 8px; }
+        .room-item { border: 1px solid #eee; padding: 15px; margin: 8px 0; cursor: pointer; border-radius: 8px; background: white; display: flex; justify-content: space-between; align-items: center; transition: 0.2s; }
+        .room-item:hover { background: #e0e7ff; transform: translateY(-1px); }
+        input[type="text"], input[type="password"] { padding: 10px; width: calc(100% - 22px); margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; }
+        button { padding: 10px 20px; cursor: pointer; background: #4f46e5; color: white; border: none; border-radius: 6px; font-weight: bold; }
         button:hover { background: #4338ca; }
         .meta { font-size: 0.8em; color: #666; }
+        .msg { margin-bottom: 10px; padding: 8px; border-radius: 6px; background: #fff; border-left: 4px solid #4f46e5; }
     </style>
 </head>
 <body>
 
-    <h1>ゆるチャット</h1>
+    <h1>ゆるチャット (自動削除付)</h1>
 
     <div id="lobby">
         <div class="card">
-            <h3>1. あなたの名前を決める</h3>
-            <input type="text" id="nickname-input" placeholder="ニックネーム...">
+            <h3>1. ニックネーム</h3>
+            <input type="text" id="nickname-input" placeholder="名前を決めてね">
         </div>
 
         <div class="card">
-            <h3>2. 新しいルームを作る</h3>
+            <h3>2. ルームを作る</h3>
             <input type="text" id="new-room-name" placeholder="ルーム名">
-            <input type="password" id="new-room-pass" placeholder="パスワード（空なら鍵なし）">
-            <button onclick="createRoom()">ルーム作成</button>
+            <input type="password" id="new-room-pass" placeholder="パスワード（なしなら空欄）">
+            <button onclick="createRoom()">作成して入室</button>
         </div>
 
         <hr>
@@ -39,20 +40,22 @@
     </div>
 
     <div id="chat-room" class="hidden">
-        <button onclick="leaveRoom()" style="background: #6b7280;">← ロビーへ戻る</button>
-        <h2 id="current-room-name"></h2>
-        <div id="chat-box"></div>
-        <form id="message-form">
-            <input type="text" id="message-input" placeholder="メッセージを入力..." required>
-            <button>送信</button>
-        </form>
+        <div class="card">
+            <button onclick="leaveRoom()" style="background: #6b7280;">← 退出する</button>
+            <h2 id="current-room-name"></h2>
+            <div id="chat-box"></div>
+            <form id="message-form" style="display: flex; gap: 5px;">
+                <input type="text" id="message-input" placeholder="メッセージ..." required style="margin-bottom:0; flex-grow:1;">
+                <button>送信</button>
+            </form>
+        </div>
     </div>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, updateDoc, getDoc, deleteDoc, increment } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-        // --- Firebase設定をここに貼り付け ---
+        // --- Firebase設定（自分のやつに書き換えて！） ---
         const firebaseConfig = {
             apiKey: "YOUR_API_KEY",
             authDomain: "YOUR_PROJECT.firebaseapp.com",
@@ -68,81 +71,109 @@
         let currentRoomId = null;
         let unsubscribeMessages = null;
 
-        // --- A. ルーム作成機能 ---
-        window.createRoom = async () => {
-            const name = document.getElementById('new-room-name').value;
-            const password = document.getElementById('new-room-pass').value;
-
-            if (!name) return alert("ルーム名を入れてね！");
-
-            try {
-                await addDoc(collection(db, "rooms"), {
-                    name: name,
-                    password: password || null,
-                    createdAt: serverTimestamp()
-                });
-                document.getElementById('new-room-name').value = "";
-                document.getElementById('new-room-pass').value = "";
-                alert("ルームを作ったよ！");
-            } catch (e) {
-                alert("エラー起きたわ: " + e.message);
-            }
-        };
-
-        // --- B. ルーム一覧のリアルタイム表示 ---
-        const roomListDiv = document.getElementById('room-list');
+        // --- ルーム一覧の監視 ---
         onSnapshot(query(collection(db, "rooms"), orderBy("createdAt", "desc")), (snapshot) => {
+            const roomListDiv = document.getElementById('room-list');
             roomListDiv.innerHTML = "";
-            snapshot.forEach(doc => {
-                const room = doc.data();
+            snapshot.forEach(docSnap => {
+                const room = docSnap.data();
                 const div = document.createElement('div');
                 div.className = 'room-item';
                 div.innerHTML = `
-                    <span>${room.name}</span>
-                    <span class="meta">${room.password ? '🔒 要パスワード' : '🔓 公開'}</span>
+                    <div>
+                        <strong>${room.name}</strong><br>
+                        <span class="meta">中にいる人: ${room.activeUsers || 0}人</span>
+                    </div>
+                    <span class="meta">${room.password ? '🔒' : '🔓'}</span>
                 `;
-                div.onclick = () => joinRoom(doc.id, room);
+                div.onclick = () => joinRoom(docSnap.id, room);
                 roomListDiv.appendChild(div);
             });
         });
 
-        // --- C. ルーム入室（パスワード判定） ---
-        window.joinRoom = (id, room) => {
+        // --- ルーム作成 ---
+        window.createRoom = async () => {
+            const name = document.getElementById('new-room-name').value;
+            const password = document.getElementById('new-room-pass').value;
             const nickname = document.getElementById('nickname-input').value;
-            if (!nickname) return alert("まずはニックネームを入力してね！");
+
+            if (!nickname) return alert("先に名前を決めてね！");
+            if (!name) return alert("ルーム名を入れてね！");
+
+            const docRef = await addDoc(collection(db, "rooms"), {
+                name: name,
+                password: password || null,
+                activeUsers: 0, // 最初は0
+                createdAt: serverTimestamp()
+            });
+
+            // そのまま入室
+            const snap = await getDoc(docRef);
+            joinRoom(docRef.id, snap.data());
+        };
+
+        // --- 入室処理 ---
+        window.joinRoom = async (id, room) => {
+            const nickname = document.getElementById('nickname-input').value;
+            if (!nickname) return alert("名前を入力してね！");
 
             if (room.password) {
-                const pass = prompt("合言葉（パスワード）を入れてね");
-                if (pass !== room.password) return alert("パスワードが違うみたい...");
+                const pass = prompt("パスワードを入力");
+                if (pass !== room.password) return alert("違うよ");
             }
 
             currentRoomId = id;
-            document.getElementById('current-room-name').innerText = "ルーム: " + room.name;
+            
+            // 人数を+1
+            await updateDoc(doc(db, "rooms", id), { activeUsers: increment(1) });
+
+            document.getElementById('current-room-name').innerText = room.name;
             document.getElementById('lobby').classList.add('hidden');
             document.getElementById('chat-room').classList.remove('hidden');
 
-            // チャット履歴の取得
+            // メッセージ取得
             const q = query(collection(db, `rooms/${id}/messages`), orderBy("createdAt", "asc"));
             unsubscribeMessages = onSnapshot(q, (snapshot) => {
                 const chatBox = document.getElementById('chat-box');
                 chatBox.innerHTML = "";
                 snapshot.forEach(doc => {
                     const m = doc.data();
-                    const p = document.createElement('div');
-                    p.style.marginBottom = "8px";
-                    p.innerHTML = `<small>${m.sender}</small><br><strong>${m.text}</strong>`;
-                    chatBox.appendChild(p);
+                    const div = document.createElement('div');
+                    div.className = 'msg';
+                    div.innerHTML = `<small>${m.sender}</small><div>${m.text}</div>`;
+                    chatBox.appendChild(div);
                 });
                 chatBox.scrollTop = chatBox.scrollHeight;
             });
         };
 
-        // --- D. メッセージ送信 ---
+        // --- 退出処理（0人なら削除） ---
+        window.leaveRoom = async () => {
+            if (!currentRoomId) return;
+
+            const roomRef = doc(db, "rooms", currentRoomId);
+            if (unsubscribeMessages) unsubscribeMessages();
+
+            // 人数を-1
+            await updateDoc(roomRef, { activeUsers: increment(-1) });
+
+            // 0人かチェック
+            const snap = await getDoc(roomRef);
+            if (snap.exists() && snap.data().activeUsers <= 0) {
+                await deleteDoc(roomRef);
+                console.log("部屋を削除しました");
+            }
+
+            currentRoomId = null;
+            document.getElementById('lobby').classList.remove('hidden');
+            document.getElementById('chat-room').classList.add('hidden');
+        };
+
+        // --- メッセージ送信 ---
         document.getElementById('message-form').onsubmit = async (e) => {
             e.preventDefault();
             const input = document.getElementById('message-input');
             const nickname = document.getElementById('nickname-input').value;
-
             await addDoc(collection(db, `rooms/${currentRoomId}/messages`), {
                 text: input.value,
                 sender: nickname,
@@ -151,12 +182,9 @@
             input.value = "";
         };
 
-        // --- ロビーに戻る ---
-        window.leaveRoom = () => {
-            if (unsubscribeMessages) unsubscribeMessages();
-            document.getElementById('lobby').classList.remove('hidden');
-            document.getElementById('chat-room').classList.add('hidden');
-        };
+        // ブラウザを閉じたときも退出処理を試みる
+        window.onbeforeunload = () => { if(currentRoomId) leaveRoom(); };
+
     </script>
 </body>
 </html>
