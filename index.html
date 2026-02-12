@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Firebase Simple Chat</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 10px; }
+        .hidden { display: none; }
+        #chat-box { border: 1px solid #ccc; height: 300px; overflow-y: scroll; margin-bottom: 10px; padding: 10px; }
+        .room-item { border: 1px solid #ddd; padding: 10px; margin: 5px 0; cursor: pointer; border-radius: 5px; }
+        .room-item:hover { background: #f0f0f0; }
+    </style>
+</head>
+<body>
+
+    <h1>爆速チャット</h1>
+
+    <div id="lobby">
+        <input type="text" id="nickname-input" placeholder="ニックネームを入力...">
+        <hr>
+        <h3>ルーム一覧</h3>
+        <div id="room-list">読み込み中...</div>
+    </div>
+
+    <div id="chat-room" class="hidden">
+        <button onclick="leaveRoom()">← ロビーへ戻る</button>
+        <h2 id="current-room-name"></h2>
+        <div id="chat-box"></div>
+        <form id="message-form">
+            <input type="text" id="message-input" placeholder="メッセージ..." required>
+            <button>送信</button>
+        </form>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // ここに自分のFirebaseコンソールの設定を貼り付けて！
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        let currentRoomId = null;
+        let unsubscribeMessages = null;
+
+        // --- ルーム一覧の取得 ---
+        const roomListDiv = document.getElementById('room-list');
+        onSnapshot(query(collection(db, "rooms"), orderBy("createdAt", "desc")), (snapshot) => {
+            roomListDiv.innerHTML = "";
+            snapshot.forEach(doc => {
+                const room = doc.data();
+                const div = document.createElement('div');
+                div.className = 'room-item';
+                div.innerHTML = `${room.name} ${room.password ? '🔒' : '🔓'}`;
+                div.onclick = () => joinRoom(doc.id, room);
+                roomListDiv.appendChild(div);
+            });
+        });
+
+        // --- ルーム入室 ---
+        window.joinRoom = (id, room) => {
+            const nickname = document.getElementById('nickname-input').value;
+            if (!nickname) return alert("先にニックネームを決めてね！");
+
+            if (room.password) {
+                const pass = prompt("パスワードを入力してね");
+                if (pass !== room.password) return alert("パスワードが違うよ");
+            }
+
+            currentRoomId = id;
+            document.getElementById('current-room-name').innerText = room.name;
+            document.getElementById('lobby').classList.add('hidden');
+            document.getElementById('chat-room').classList.remove('hidden');
+
+            // メッセージ監視開始
+            const q = query(collection(db, `rooms/${id}/messages`), orderBy("createdAt", "asc"));
+            unsubscribeMessages = onSnapshot(q, (snapshot) => {
+                const chatBox = document.getElementById('chat-box');
+                chatBox.innerHTML = "";
+                snapshot.forEach(doc => {
+                    const m = doc.data();
+                    const p = document.createElement('p');
+                    p.innerHTML = `<strong>${m.sender}:</strong> ${m.text}`;
+                    chatBox.appendChild(p);
+                });
+                chatBox.scrollTop = chatBox.scrollHeight;
+            });
+        };
+
+        // --- メッセージ送信 ---
+        document.getElementById('message-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('message-input');
+            const nickname = document.getElementById('nickname-input').value;
+
+            await addDoc(collection(db, `rooms/${currentRoomId}/messages`), {
+                text: input.value,
+                sender: nickname,
+                createdAt: serverTimestamp()
+            });
+            input.value = "";
+        };
+
+        // --- ロビーに戻る ---
+        window.leaveRoom = () => {
+            if (unsubscribeMessages) unsubscribeMessages();
+            document.getElementById('lobby').classList.remove('hidden');
+            document.getElementById('chat-room').classList.add('hidden');
+        };
+    </script>
+</body>
+</html>
