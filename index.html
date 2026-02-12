@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Firebase Chat - Fixed Version</title>
+    <title>Firebase Chat - Stable Version</title>
     <style>
         body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 10px; line-height: 1.6; background: #f0f2f5; }
         .hidden { display: none; }
@@ -12,6 +12,7 @@
         .room-item:hover { background: #e0e7ff; }
         input[type="text"], input[type="password"] { padding: 10px; width: calc(100% - 22px); margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; }
         button { padding: 10px 20px; cursor: pointer; background: #4f46e5; color: white; border: none; border-radius: 6px; font-weight: bold; }
+        button:disabled { background: #9ca3af; cursor: not-allowed; }
         .msg { margin-bottom: 10px; padding: 8px; border-radius: 6px; background: #fff; border-left: 4px solid #4f46e5; }
     </style>
 </head>
@@ -28,7 +29,7 @@
             <h3>2. ルームを作る</h3>
             <input type="text" id="new-room-name" placeholder="ルーム名">
             <input type="password" id="new-room-pass" placeholder="パスワード（なしなら空欄）">
-            <button onclick="createRoom()">作成して入室</button>
+            <button id="create-btn" onclick="createRoom()">作成して入室</button>
         </div>
         <hr>
         <h3>ルーム一覧</h3>
@@ -61,11 +62,13 @@
             appId: "1:265645164943:web:65b0b9ce73f927f1c723fa",
             measurementId: "G-6DY5N71MJ3"
         };
+
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
 
         let currentRoomId = null;
         let unsubscribeMessages = null;
+        let isProcessing = false; // 二重入室ガード用フラグ
 
         // ルーム一覧の監視
         onSnapshot(query(collection(db, "rooms"), orderBy("createdAt", "desc")), (snapshot) => {
@@ -76,80 +79,116 @@
                 const div = document.createElement('div');
                 div.className = 'room-item';
                 div.innerHTML = `<div><strong>${room.name}</strong><br><small>人数: ${room.activeUsers || 0}</small></div><span>${room.password ? '🔒' : '🔓'}</span>`;
-                div.onclick = () => joinRoom(docSnap.id);
+                // 既に部屋にいる場合はクリック無効
+                div.onclick = () => { if(!currentRoomId) joinRoom(docSnap.id); };
                 roomListDiv.appendChild(div);
             });
         });
 
         // ルーム作成
         window.createRoom = async () => {
+            if (isProcessing) return;
             const name = document.getElementById('new-room-name').value;
-            const password = document.getElementById('new-room-pass').value;
             const nickname = document.getElementById('nickname-input').value;
 
             if (!nickname || !name) return alert("名前とルーム名を入れてね");
 
-            const docRef = await addDoc(collection(db, "rooms"), {
-                name: name,
-                password: password || null,
-                activeUsers: 0,
-                createdAt: serverTimestamp()
-            });
-            joinRoom(docRef.id);
+            isProcessing = true;
+            document.getElementById('create-btn').disabled = true;
+
+            try {
+                const docRef = await addDoc(collection(db, "rooms"), {
+                    name: name,
+                    password: document.getElementById('new-room-pass').value || null,
+                    activeUsers: 0,
+                    createdAt: serverTimestamp()
+                });
+                // 作成後に自動入室
+                await joinRoom(docRef.id);
+            } catch (e) {
+                alert("作成失敗: " + e.message);
+            } finally {
+                isProcessing = false;
+                document.getElementById('create-btn').disabled = false;
+            }
         };
 
-        // 入室処理（ここで最新のroomデータを取得するように修正）
+        // 入室処理
         window.joinRoom = async (id) => {
+            if (isProcessing && !currentRoomId === null) return;
+            isProcessing = true;
+
             const nickname = document.getElementById('nickname-input').value;
-            if (!nickname) return alert("名前を入力してね！");
-
-            const roomRef = doc(db, "rooms", id);
-            const snap = await getDoc(roomRef);
-            if (!snap.exists()) return alert("ルームが見つからへん...");
-            const room = snap.data();
-
-            if (room.password) {
-                const pass = prompt("パスワードを入力");
-                if (pass !== room.password) return alert("違うよ");
+            if (!nickname) {
+                isProcessing = false;
+                return alert("名前を入力してね！");
             }
 
-            currentRoomId = id;
-            await updateDoc(roomRef, { activeUsers: increment(1) });
+            try {
+                const roomRef = doc(db, "rooms", id);
+                const snap = await getDoc(roomRef);
+                if (!snap.exists()) throw new Error("ルームが消えたかも");
+                const room = snap.data();
 
-            document.getElementById('current-room-name').innerText = room.name;
-            document.getElementById('lobby').classList.add('hidden');
-            document.getElementById('chat-room').classList.remove('hidden');
+                if (room.password) {
+                    const pass = prompt("パスワードを入力");
+                    if (pass !== room.password) throw new Error("パスワードが違うよ");
+                }
 
-            const q = query(collection(db, `rooms/${id}/messages`), orderBy("createdAt", "asc"));
-            unsubscribeMessages = onSnapshot(q, (snapshot) => {
-                const chatBox = document.getElementById('chat-box');
-                chatBox.innerHTML = "";
-                snapshot.forEach(msgDoc => {
-                    const m = msgDoc.data();
-                    const div = document.createElement('div');
-                    div.className = 'msg';
-                    div.innerHTML = `<small>${m.sender}</small><div>${m.text}</div>`;
-                    chatBox.appendChild(div);
+                // 人数を+1 (Firestore側で反映)
+                await updateDoc(roomRef, { activeUsers: increment(1) });
+                currentRoomId = id;
+
+                // UI切り替え
+                document.getElementById('current-room-name').innerText = room.name;
+                document.getElementById('lobby').classList.add('hidden');
+                document.getElementById('chat-room').classList.remove('hidden');
+
+                // メッセージ取得
+                const q = query(collection(db, `rooms/${id}/messages`), orderBy("createdAt", "asc"));
+                unsubscribeMessages = onSnapshot(q, (snapshot) => {
+                    const chatBox = document.getElementById('chat-box');
+                    chatBox.innerHTML = "";
+                    snapshot.forEach(msgDoc => {
+                        const m = msgDoc.data();
+                        const div = document.createElement('div');
+                        div.className = 'msg';
+                        div.innerHTML = `<small>${m.sender}</small><div>${m.text}</div>`;
+                        chatBox.appendChild(div);
+                    });
+                    chatBox.scrollTop = chatBox.scrollHeight;
                 });
-                chatBox.scrollTop = chatBox.scrollHeight;
-            });
+            } catch (e) {
+                alert(e.message);
+            } finally {
+                isProcessing = false;
+            }
         };
 
-        // 退出処理
+        // 退出処理（0人なら削除）
         window.leaveRoom = async () => {
-            if (!currentRoomId) return;
+            if (!currentRoomId || isProcessing) return;
+            isProcessing = true;
+
             const roomRef = doc(db, "rooms", currentRoomId);
             if (unsubscribeMessages) unsubscribeMessages();
 
-            await updateDoc(roomRef, { activeUsers: increment(-1) });
-            const snap = await getDoc(roomRef);
-            if (snap.exists() && snap.data().activeUsers <= 0) {
-                await deleteDoc(roomRef);
+            try {
+                await updateDoc(roomRef, { activeUsers: increment(-1) });
+                const snap = await getDoc(roomRef);
+                
+                // 誰がいなくなったら（0人以下なら）削除
+                if (snap.exists() && snap.data().activeUsers <= 0) {
+                    await deleteDoc(roomRef);
+                }
+            } catch (e) {
+                console.error("退出エラー:", e);
             }
 
             currentRoomId = null;
             document.getElementById('lobby').classList.remove('hidden');
             document.getElementById('chat-room').classList.add('hidden');
+            isProcessing = false;
         };
 
         // メッセージ送信
@@ -157,6 +196,8 @@
             e.preventDefault();
             const input = document.getElementById('message-input');
             const nickname = document.getElementById('nickname-input').value;
+            if (!currentRoomId) return;
+
             await addDoc(collection(db, `rooms/${currentRoomId}/messages`), {
                 text: input.value,
                 sender: nickname,
@@ -165,6 +206,7 @@
             input.value = "";
         };
 
+        // ブラウザを閉じたとき
         window.onbeforeunload = () => { if(currentRoomId) leaveRoom(); };
     </script>
 </body>
